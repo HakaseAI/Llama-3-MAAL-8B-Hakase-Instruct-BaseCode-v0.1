@@ -1,8 +1,11 @@
 import json
-from transformers import LlamaForCausalLM, PreTrainedTokenizerFast, Trainer, TrainingArguments
 import torch
+import bitsandbytes as bnb
+from peft import LoraConfig, get_peft_model
 from datasets import Dataset
-from torch.cuda.amp import autocast, GradScaler
+from torch.cuda.amp import GradScaler
+from torch.quantization import quantize_dynamic
+from transformers import LlamaForCausalLM, PreTrainedTokenizerFast, Trainer, TrainingArguments
 
 # 데이터셋 로드
 with open('dataset/dataset.json', 'r', encoding='utf-8') as f:
@@ -40,13 +43,19 @@ training_args = TrainingArguments(
     push_to_hub=False,  # 모델을 Hugging Face Hub에 푸시하지 않음
 )
 
-# 트레이너 초기화
-trainer = Trainer(
-    model=model,
-    args=training_args,
-    train_dataset=tokenized_datasets,
-    eval_dataset=tokenized_datasets,
+# 모델의 일부 파라미터 동결
+for param in model.base_model.parameters():
+    param.requires_grad = False
+
+lora_config = LoraConfig(
+    lora_alpha=128,
+    lora_dropout=0.05,
+    r=256,
+    bias="none",
+    target_modules="all-linear",
+    task_type="CAUSAL_LM",
 )
+model = get_peft_model(model, lora_config)
 
 # GPU 사용 설정
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -55,23 +64,26 @@ model.to(device)
 # Mixed Precision Training 설정
 scaler = GradScaler()
 
-# Optimizer 설정
-optimizer = torch.optim.AdamW(model.parameters(), lr=training_args.learning_rate)
+# Optimizer 설정 (bitsandbytes를 사용하여 8-bit optimizer 적용)
+optimizer = bnb.optim.Adam8bit(model.parameters(), lr=training_args.learning_rate)
 
-# 사용자 정의 훈련 루프
-for epoch in range(training_args.num_train_epochs):
-    model.train()
-    for step, batch in enumerate(trainer.get_train_dataloader()):
-        optimizer.zero_grad()
+# Trainer 정의
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=tokenized_datasets,
+    eval_dataset=tokenized_datasets,
+    tokenizer=tokenizer
+)
 
-        with autocast():
-            outputs = model(**batch)
-            loss = outputs.loss
+# 훈련
+trainer.train()
 
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
+# 모델 양자화
+model.eval()  # 모델을 평가 모드로 전환
+quantized_model = quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8)
 
-    trainer.evaluate()
+# 양자화된 모델 저장
+quantized_model.save_pretrained('./quantized_model')
 
-print("모델 훈련이 완료되었습니다.")
+print("모델 훈련이 완료되었고, 양자화된 모델이 저장되었습니다.")
