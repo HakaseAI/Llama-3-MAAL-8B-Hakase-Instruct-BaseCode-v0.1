@@ -1,6 +1,6 @@
 import json
 import torch
-from torch.cuda.amp import GradScaler
+from torch.cuda.amp import autocast, GradScaler
 from transformers import LlamaForCausalLM, PreTrainedTokenizerFast, Trainer, TrainingArguments
 from peft import LoraConfig, get_peft_model
 from datasets import Dataset
@@ -76,8 +76,20 @@ trainer = CustomTrainer(
     optimizers=(optimizer, None)  # Pass optimizer, with no scheduler
 )
 
-# Train the model
-trainer.train()
+for epoch in range(training_args.num_train_epochs):
+    peft_model.train()
+    for step, batch in enumerate(trainer.get_train_dataloader()):
+        optimizer.zero_grad()
+
+        with autocast():
+            outputs = model(**batch)
+            loss = outputs.loss
+
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+
+    trainer.evaluate()
 
 # Save the fine-tuned model
 peft_model.save_pretrained('./lora_finetuned_model')
