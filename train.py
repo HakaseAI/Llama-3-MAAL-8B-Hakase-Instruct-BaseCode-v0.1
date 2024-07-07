@@ -40,6 +40,14 @@ training_args = TrainingArguments(
     push_to_hub=False,  # 모델을 Hugging Face Hub에 푸시하지 않음
 )
 
+# 트레이너 초기화
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=tokenized_datasets,
+    eval_dataset=tokenized_datasets,
+)
+
 # GPU 사용 설정
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
@@ -47,7 +55,7 @@ model.to(device)
 # Mixed Precision Training 설정
 scaler = GradScaler()
 
-# Optimizer 설정 (Trainer의 기본 optimizer는 AdamW입니다)
+# Optimizer 설정
 optimizer = torch.optim.AdamW(model.parameters(), lr=training_args.learning_rate)
 
 # 사용자 정의 훈련 루프
